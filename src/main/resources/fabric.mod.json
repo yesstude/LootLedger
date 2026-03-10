@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "lootledger",
+	"version": "${version}",
+	"name": "LootLedger",
+	"description": "LootLedger tracks every interaction with containers such as chests, barrels, shulker boxes and more. See who accessed a container, what items were added or removed, and when it happened — all stored persistently per world. Works in singleplayer and multiplayer.",
+	"authors": [
+		"SoughtDestiny"
+	],
+	"contributors": [
+		"NotrlyPleasant"
+	],
+	"contact": {},
+	"license": "MIT",
+	"icon": "assets/lootledger/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"loot.ledger.LootLedger"
+		],
+		"client": [
+			"loot.ledger.LootLedgerClient"
+		]
+	},
+	"mixins": [
+		"lootledger.mixins.json",
+		{
+			"config": "lootledger.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.18.4",
+		"minecraft": ">=1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
