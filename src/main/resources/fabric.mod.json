@@ -10,7 +10,10 @@
 	"contributors": [
 		"NotrlyPleasant"
 	],
-	"contact": {},
+	"contact": {
+		"issues": "https://github.com/SoughtDestiny/LootLedger/issues",
+		"sources": "https://github.com/SoughtDestiny/LootLedger"
+	},
 	"license": "MIT",
 	"icon": "assets/lootledger/icon.png",
 	"environment": "*",

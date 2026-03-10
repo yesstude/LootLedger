@@ -120,7 +120,7 @@ public class LootLedgerEvents {
     }
 
     private static void checkInventoryChanges(ServerPlayerEntity player, ServerWorld world) {
-        for (Map.Entry<String, Map<Integer, ItemStack>> entry : snapshots.entrySet()) {
+        for (Map.Entry<String, Map<Integer, ItemStack>> entry : new HashMap<>(snapshots).entrySet()) {
             String key = entry.getKey();
             if (!key.startsWith(player.getUuidAsString())) continue;
 
@@ -133,7 +133,6 @@ public class LootLedgerEvents {
             BlockEntity be = world.getBlockEntity(pos);
             if (be == null) continue;
 
-            // Kombinierte Inventory für Vergleich holen
             Inventory inventory = getInventory(world, pos, be);
             if (inventory == null) continue;
 
@@ -151,27 +150,58 @@ public class LootLedgerEvents {
 
                 if (!ItemStack.areEqual(oldStack, newStack)) {
                     changed = true;
-                    if (newStack.isEmpty() && !oldStack.isEmpty()) {
-                        ContainerAccessLog.addEntry(pos, player.getName().getString(), oldStack, true);
-                    } else if (!newStack.isEmpty() && oldStack.isEmpty()) {
-                        ContainerAccessLog.addEntry(pos, player.getName().getString(), newStack, false);
-                    } else {
-                        int diff = newStack.getCount() - oldStack.getCount();
-                        if (diff < 0) {
-                            ItemStack diffStack = oldStack.copy();
-                            diffStack.setCount(Math.abs(diff));
-                            ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, true);
-                        } else if (diff > 0) {
-                            ItemStack diffStack = newStack.copy();
-                            diffStack.setCount(diff);
-                            ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, false);
+
+                    // Prüfen ob der Player selbst die Änderung gemacht hat
+                    // via currentScreenHandler Slot-Vergleich
+                    boolean playerMadeChange = isPlayerHoldingItem(player, oldStack, newStack);
+
+                    // Nur loggen wenn dieser Spieler die Änderung gemacht hat
+                    if (playerMadeChange) {
+                        if (newStack.isEmpty() && !oldStack.isEmpty()) {
+                            ContainerAccessLog.addEntry(pos, player.getName().getString(), oldStack, true);
+                        } else if (!newStack.isEmpty() && oldStack.isEmpty()) {
+                            ContainerAccessLog.addEntry(pos, player.getName().getString(), newStack, false);
+                        } else {
+                            int diff = newStack.getCount() - oldStack.getCount();
+                            if (diff < 0) {
+                                ItemStack diffStack = oldStack.copy();
+                                diffStack.setCount(Math.abs(diff));
+                                ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, true);
+                            } else if (diff > 0) {
+                                ItemStack diffStack = newStack.copy();
+                                diffStack.setCount(diff);
+                                ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, false);
+                            }
                         }
                     }
                 }
             }
 
             if (changed) {
-                entry.setValue(newSnapshot);
+                // Snapshot für ALLE Spieler die diese Kiste offen haben updaten!
+                updateAllSnapshotsForPos(pos, newSnapshot);
+            }
+        }
+    }
+
+    private static boolean isPlayerHoldingItem(ServerPlayerEntity player, ItemStack oldStack, ItemStack newStack) {
+        // Spieler hat Item rausgenommen: er hält es jetzt in der Hand/Cursor
+        ItemStack cursor = player.currentScreenHandler.getCursorStack();
+        if (!oldStack.isEmpty() && newStack.isEmpty()) {
+            return ItemStack.areItemsEqual(cursor, oldStack);
+        }
+        // Spieler hat Item reingelegt: Cursor war vorher voll
+        if (oldStack.isEmpty() && !newStack.isEmpty()) {
+            return ItemStack.areItemsEqual(cursor, newStack) || cursor.isEmpty();
+        }
+        return true;
+    }
+
+    private static void updateAllSnapshotsForPos(BlockPos pos, Map<Integer, ItemStack> newSnapshot) {
+        String posStr = pos.getX() + "," + pos.getY() + "," + pos.getZ();
+        for (Map.Entry<String, Map<Integer, ItemStack>> entry : snapshots.entrySet()) {
+            if (entry.getKey().contains("@" + posStr)) {
+                entry.setValue(new HashMap<>(newSnapshot));
             }
         }
     }
