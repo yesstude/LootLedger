@@ -19,7 +19,6 @@ public class ClientContainerOpenMixin {
         MinecraftClient client = MinecraftClient.getInstance();
 
         client.execute(() -> {
-            // Wenn wir bereits eine pendingPos vom Server haben, setze sie
             if (LootLedgerClient.pendingPos != null
                     && client.currentScreen instanceof HandledScreen<?> screen
                     && screen instanceof LootLedgerScreen lootScreen) {

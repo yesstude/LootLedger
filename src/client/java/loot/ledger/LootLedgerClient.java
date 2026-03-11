@@ -16,12 +16,10 @@ public class LootLedgerClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
-		// Empfange Container-Position vom Server
 		ClientPlayNetworking.registerGlobalReceiver(
 				LootLedgerPackets.ContainerOpenedPayload.ID,
 				(payload, context) -> {
 					context.client().execute(() -> {
-						// Setze Position in der aktuellen GUI
 						if (context.client().currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen<?> screen) {
 							if (screen instanceof LootLedgerScreen lootScreen) {
 								lootScreen.setLootLedgerPos(payload.pos());
@@ -32,7 +30,6 @@ public class LootLedgerClient implements ClientModInitializer {
 				}
 		);
 
-		// Empfange Log-Antwort vom Server
 		ClientPlayNetworking.registerGlobalReceiver(
 				LootLedgerPackets.LogResponsePayload.ID,
 				(payload, context) -> {

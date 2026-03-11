@@ -1,7 +1,6 @@
 package loot.ledger;
 
 import loot.ledger.network.LootLedgerPackets;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.block.ChestBlock;
@@ -12,20 +11,16 @@ import net.minecraft.inventory.Inventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 
 public class LootLedgerEvents {
 
     private static final Map<String, Map<Integer, ItemStack>> snapshots = new HashMap<>();
-    private static final Map<String, Long> snapshotTimestamps = new HashMap<>();
 
     public static void register() {
         UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
@@ -34,39 +29,103 @@ public class LootLedgerEvents {
 
             BlockPos pos = hitResult.getBlockPos();
             BlockEntity be = world.getBlockEntity(pos);
-
             if (!isTrackedContainer(be)) return ActionResult.PASS;
 
             BlockPos trackPos = getCanonicalPos(world, pos, be);
-            String key = snapshotKey((ServerPlayerEntity) player, trackPos);
-
-            if (snapshots.containsKey(key)) return ActionResult.PASS;
+            ServerPlayerEntity serverPlayer = (ServerPlayerEntity) player;
 
             Inventory inventory = getInventory(world, pos, be);
             if (inventory == null) return ActionResult.PASS;
 
-            takeSnapshot((ServerPlayerEntity) player, trackPos, inventory);
-            snapshotTimestamps.put(key, System.currentTimeMillis());
+            pendingPos.put(serverPlayer.getUuidAsString(), trackPos);
+            pendingInventorySize.put(serverPlayer.getUuidAsString(), inventory.size());
 
             ServerPlayNetworking.send(
-                    (ServerPlayerEntity) player,
+                    serverPlayer,
                     new LootLedgerPackets.ContainerOpenedPayload(trackPos)
             );
 
             return ActionResult.PASS;
         });
 
-        ServerTickEvents.END_SERVER_TICK.register(server -> {
-            if (snapshots.isEmpty()) return;
-
-            for (ServerWorld world : server.getWorlds()) {
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.END_SERVER_TICK.register(server -> {
+            if (pendingPos.isEmpty()) return;
+            for (net.minecraft.server.world.ServerWorld world : server.getWorlds()) {
                 for (ServerPlayerEntity player : world.getPlayers()) {
-                    checkInventoryChanges(player, world);
+                    String uuid = player.getUuidAsString();
+                    BlockPos pos = pendingPos.get(uuid);
+                    if (pos == null) continue;
+
+                    ScreenHandler handler = player.currentScreenHandler;
+                    if (handler == player.playerScreenHandler) continue;
+
+                    ((ScreenHandlerPos)(Object) handler).lootledger_setPos(pos);
+
+                    String key = snapshotKey(player, pos);
+                    if (!snapshots.containsKey(key)) {
+                        BlockEntity be = world.getBlockEntity(pos);
+                        if (be != null) {
+                            Inventory inventory = getInventory(world, pos, be);
+                            if (inventory != null) {
+                                takeSnapshot(player, pos, inventory);
+                            }
+                        }
+                    }
+
+                    pendingPos.remove(uuid);
+                    pendingInventorySize.remove(uuid);
                 }
             }
-
-            cleanupClosedContainers(server.getWorlds());
         });
+    }
+
+    private static final Map<String, BlockPos> pendingPos = new HashMap<>();
+    private static final Map<String, Integer> pendingInventorySize = new HashMap<>();
+
+    public static void afterSlotClick(ServerPlayerEntity player, ScreenHandler handler,
+                                      int slotIndex, ItemStack oldStack, ItemStack newStack) {
+        if (handler == player.playerScreenHandler) return;
+        if (ItemStack.areEqual(oldStack, newStack)) return;
+
+        BlockPos pos = ((ScreenHandlerPos)(Object) handler).lootledger_getPos();
+        if (pos == null) return;
+
+        String key = snapshotKey(player, pos);
+        if (!snapshots.containsKey(key)) return;
+
+        if (newStack.isEmpty() && !oldStack.isEmpty()) {
+            ContainerAccessLog.addEntry(pos, player.getName().getString(), oldStack, true);
+        } else if (!newStack.isEmpty() && oldStack.isEmpty()) {
+            ContainerAccessLog.addEntry(pos, player.getName().getString(), newStack, false);
+        } else {
+            int diff = newStack.getCount() - oldStack.getCount();
+            if (diff < 0) {
+                ItemStack diffStack = oldStack.copy();
+                diffStack.setCount(Math.abs(diff));
+                ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, true);
+            } else if (diff > 0) {
+                ItemStack diffStack = newStack.copy();
+                diffStack.setCount(diff);
+                ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, false);
+            }
+        }
+
+        updateSnapshotSlotForAll(pos, slotIndex, newStack);
+    }
+
+    public static void onContainerClosed(ServerPlayerEntity player) {
+        pendingPos.remove(player.getUuidAsString());
+        pendingInventorySize.remove(player.getUuidAsString());
+        snapshots.keySet().removeIf(key -> key.startsWith(player.getUuidAsString()));
+    }
+
+    private static void updateSnapshotSlotForAll(BlockPos pos, int slotIndex, ItemStack newStack) {
+        String posStr = pos.getX() + "," + pos.getY() + "," + pos.getZ();
+        for (Map.Entry<String, Map<Integer, ItemStack>> entry : snapshots.entrySet()) {
+            if (entry.getKey().contains("@" + posStr)) {
+                entry.getValue().put(slotIndex, newStack.copy());
+            }
+        }
     }
 
     private static Inventory getInventory(net.minecraft.world.World world, BlockPos pos, BlockEntity be) {
@@ -93,9 +152,7 @@ public class LootLedgerEvents {
                                     ? facing.rotateYClockwise()
                                     : facing.rotateYCounterclockwise();
                     BlockPos otherPos = pos.offset(otherDir);
-                    if (otherPos.compareTo(pos) < 0) {
-                        return otherPos;
-                    }
+                    if (otherPos.compareTo(pos) < 0) return otherPos;
                 }
             }
         }
@@ -115,105 +172,7 @@ public class LootLedgerEvents {
         snapshots.put(key, snapshot);
     }
 
-    private static void checkInventoryChanges(ServerPlayerEntity player, ServerWorld world) {
-        for (Map.Entry<String, Map<Integer, ItemStack>> entry : new HashMap<>(snapshots).entrySet()) {
-            String key = entry.getKey();
-            if (!key.startsWith(player.getUuidAsString())) continue;
-
-            Long openedAt = snapshotTimestamps.get(key);
-            if (openedAt == null || System.currentTimeMillis() - openedAt < 500) continue;
-
-            BlockPos pos = keyToPos(key);
-            if (pos == null) continue;
-
-            BlockEntity be = world.getBlockEntity(pos);
-            if (be == null) continue;
-
-            Inventory inventory = getInventory(world, pos, be);
-            if (inventory == null) continue;
-
-            Map<Integer, ItemStack> oldSnapshot = entry.getValue();
-            Map<Integer, ItemStack> newSnapshot = new HashMap<>();
-
-            for (int i = 0; i < inventory.size(); i++) {
-                newSnapshot.put(i, inventory.getStack(i).copy());
-            }
-
-            boolean changed = false;
-            for (int i = 0; i < inventory.size(); i++) {
-                ItemStack oldStack = oldSnapshot.getOrDefault(i, ItemStack.EMPTY);
-                ItemStack newStack = newSnapshot.getOrDefault(i, ItemStack.EMPTY);
-
-                if (!ItemStack.areEqual(oldStack, newStack)) {
-                    changed = true;
-                    if (newStack.isEmpty() && !oldStack.isEmpty()) {
-                        ContainerAccessLog.addEntry(pos, player.getName().getString(), oldStack, true);
-                    } else if (!newStack.isEmpty() && oldStack.isEmpty()) {
-                        ContainerAccessLog.addEntry(pos, player.getName().getString(), newStack, false);
-                    } else {
-                        int diff = newStack.getCount() - oldStack.getCount();
-                        if (diff < 0) {
-                            ItemStack diffStack = oldStack.copy();
-                            diffStack.setCount(Math.abs(diff));
-                            ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, true);
-                        } else if (diff > 0) {
-                            ItemStack diffStack = newStack.copy();
-                            diffStack.setCount(diff);
-                            ContainerAccessLog.addEntry(pos, player.getName().getString(), diffStack, false);
-                        }
-                    }
-                }
-            }
-
-            if (changed) {
-                updateAllSnapshotsForPos(pos, newSnapshot);
-            }
-        }
-    }
-
-    private static void updateAllSnapshotsForPos(BlockPos pos, Map<Integer, ItemStack> newSnapshot) {
-        String posStr = pos.getX() + "," + pos.getY() + "," + pos.getZ();
-        for (Map.Entry<String, Map<Integer, ItemStack>> entry : snapshots.entrySet()) {
-            if (entry.getKey().contains("@" + posStr)) {
-                entry.setValue(new HashMap<>(newSnapshot));
-            }
-        }
-    }
-
-    private static void cleanupClosedContainers(Iterable<ServerWorld> worlds) {
-        Set<String> activeKeys = new HashSet<>();
-
-        for (ServerWorld world : worlds) {
-            for (ServerPlayerEntity player : world.getPlayers()) {
-                ScreenHandler openHandler = player.currentScreenHandler;
-                if (openHandler != null && openHandler != player.playerScreenHandler) {
-                    for (String key : snapshots.keySet()) {
-                        if (key.startsWith(player.getUuidAsString())) {
-                            activeKeys.add(key);
-                        }
-                    }
-                }
-            }
-        }
-
-        snapshotTimestamps.keySet().removeIf(key -> !activeKeys.contains(key));
-        snapshots.keySet().removeIf(key -> !activeKeys.contains(key));
-    }
-
-    private static String snapshotKey(ServerPlayerEntity player, BlockPos pos) {
+    public static String snapshotKey(ServerPlayerEntity player, BlockPos pos) {
         return player.getUuidAsString() + "@" + pos.getX() + "," + pos.getY() + "," + pos.getZ();
-    }
-
-    private static BlockPos keyToPos(String key) {
-        try {
-            String[] parts = key.split("@")[1].split(",");
-            return new BlockPos(
-                    Integer.parseInt(parts[0]),
-                    Integer.parseInt(parts[1]),
-                    Integer.parseInt(parts[2])
-            );
-        } catch (Exception e) {
-            return null;
-        }
     }
 }

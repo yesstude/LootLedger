@@ -2,7 +2,11 @@
 	"required": true,
 	"package": "loot.ledger.mixin",
 	"compatibilityLevel": "JAVA_21",
-	"mixins": [],
+	"mixins": [
+		"SlotClickMixin",
+		"ContainerCloseMixin",
+		"ScreenHandlerOpenMixin"
+	],
 	"injectors": {
 		"defaultRequire": 1
 	}
